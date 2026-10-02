@@ -9,6 +9,7 @@ Self-hosted proxy that turns **Xiaomi MiMo AI Studio** (`aistudio.xiaomimimo.com
 | Change | Why |
 |---|---|
 | `app/routes.py`: streaming cleaners no longer `.strip()` each SSE chunk | Upstream stripped whitespace at chunk edges, gluing words together (`"Hithere! Smallcorrectionthough"`). Upstream MiMo sends spaces/newlines at chunk edges (e.g. `' G'` + `'ently'`, whole chunks `'.\n\n'`); stripping per-chunk destroyed them. New `_preserve_chunk_edges` helper cleans the chunk core and re-attaches original edge whitespace. |
+| `app/utils.py`: tool/system prompts reframed as `[SESSION CONFIGURATION — injected by the hosting application…]` instead of a fake `system:` role | v2.6 models **detect** the `system:` role spoof inside the user message as a prompt injection and refuse/fight it — emitting malformed `<\|MiMoML\|>` tool calls, ignoring tools, or going off-script. The app-context framing gets clean, parseable tool calls from v2.6-pro. |
 | Native run guide (this README) | Upstream pushes Docker; on a laptop a plain venv uses ~80 MB RAM instead of a VM. |
 
 If you sync with upstream: `git checkout app/routes.py` reverts the patch; re-apply by re-reading `_strip_tool_result_blocks` / `_strip_tool_name_prefix` / `_strip_mimo_prefix` here.
