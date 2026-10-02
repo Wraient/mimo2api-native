@@ -1,6 +1,7 @@
 """Mimo2API Python版本 - 主程序入口"""
 
 import os
+import asyncio
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +45,18 @@ async def startup_discover_models():
     print("[启动] 后台清理过期会话...")
     import threading
     threading.Thread(target=_cleanup_old_sessions, daemon=True).start()
+
+    # 上游连接保温：空闲后首个请求也能跳过 TCP+TLS 握手（TTFT -0.2~0.4s）
+    if os.getenv("MIMO_KEEPALIVE", "1") != "0":
+        from app.mimo_client import _keepalive_loop
+        asyncio.create_task(_keepalive_loop())
+        print("[启动] 上游连接保温已开启 (45s/次, MIMO_KEEPALIVE=0 关闭)")
+
+
+@app.on_event("shutdown")
+async def shutdown_close_pool():
+    from app.mimo_client import close_shared_client
+    await close_shared_client()
 
 
 def _cleanup_old_sessions():

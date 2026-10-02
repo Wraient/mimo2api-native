@@ -6,6 +6,7 @@ import uuid
 import httpx
 import asyncio
 import traceback
+from contextlib import asynccontextmanager
 from typing import Optional, Tuple, AsyncIterator
 from .config import MimoAccount
 
@@ -13,6 +14,46 @@ from .config import MimoAccount
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0
 RETRY_MAX_DELAY = 10.0
+
+# ─── 共享连接池 ───────────────────────────────────────────
+# 每请求新建 AsyncClient 会导致每次 TCP+TLS 握手（+0.2~0.4s TTFT，空闲后更久）。
+# 进程级共享一个带 keep-alive 的客户端；配合 main.py 启动的 _keepalive_loop
+# 定期预热，保证空闲后首个请求也能跳过握手。
+_SHARED_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is None or _SHARED_CLIENT.is_closed:
+        _SHARED_CLIENT = httpx.AsyncClient(
+            timeout=MimoClient.TIMEOUT,
+            limits=httpx.Limits(max_keepalive_connections=8, keepalive_expiry=300.0),
+        )
+    return _SHARED_CLIENT
+
+
+@asynccontextmanager
+async def _pooled_client():
+    """yield 共享客户端但不关闭，连接池内复用（替代每请求 AsyncClient）。"""
+    yield _get_client()
+
+
+async def close_shared_client():
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is not None and not _SHARED_CLIENT.is_closed:
+        await _SHARED_CLIENT.aclose()
+    _SHARED_CLIENT = None
+
+
+async def _keepalive_loop(interval: float = 45.0):
+    """定期访问上游，防止 CDN 掐断空闲池化连接。MIMO_KEEPALIVE=0 可关闭。"""
+    url = "https://aistudio.xiaomimimo.com/"
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _get_client().head(url, timeout=10.0)
+        except Exception:
+            pass  # 预热失败不影响服务
 
 
 class MimoApiError(Exception):
@@ -117,7 +158,7 @@ class MimoClient:
         """
         body = self._create_request_body(query, thinking, model, multi_medias, attachments, conversation_id, reasoning_effort=reasoning_effort)
 
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with _pooled_client() as client:
             response = await client.post(
                 self.API_URL,
                 params={"xiaomichatbot_ph": self.account.xiaomichatbot_ph},
@@ -173,7 +214,7 @@ class MimoClient:
 
         chunk_count = 0
 
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with _pooled_client() as client:
             async with client.stream(
                 "POST",
                 self.API_URL,
