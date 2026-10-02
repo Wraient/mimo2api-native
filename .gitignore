@@ -1,0 +1,9 @@
+
+# --- native-run local artifacts (do not commit) ---
+.secret_key
+.port
+mimo*.log
+bench.log
+bench_results.json
+.backups/
+.natural
